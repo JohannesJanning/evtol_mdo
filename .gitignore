@@ -5,8 +5,7 @@
 *_out/
 reports/
 n2.html
-results/
-results.xlsx/
+
 
 # Python artifacts
 __pycache__/
