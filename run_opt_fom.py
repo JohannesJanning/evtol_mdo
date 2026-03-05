@@ -123,6 +123,7 @@ def main():
     all_eval_logs = []
     best_result = None
     best_x = None
+    best_run_num = None
     best_result_obj = None
     best_runtime = None
 
@@ -157,6 +158,7 @@ def main():
 
         if valid and (best_result is None or fom > best_result):
             best_result, best_x = fom, x_phys
+            best_run_num = run_idx + 1
             best_result_obj, best_runtime = result, run_time
 
     end_time_total = time.time()
@@ -169,6 +171,7 @@ def main():
         return
 
     logging.info("=== Best Design Found ===")
+    logging.info("Best Run: %d", best_run_num)
     logging.info("Max FoM = %.3f", best_result)
     logging.info("x* = %s", np.round(best_x, 3))
     logging.info("Total runtime (all runs) = %.1f s", end_time_total - start_time_total)

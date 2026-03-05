@@ -1,0 +1,15 @@
+# macOS system files
+.DS_Store
+
+# OpenMDAO / Optimization outputs
+*_out/
+reports/
+n2.html
+results/
+results.xlsx/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
