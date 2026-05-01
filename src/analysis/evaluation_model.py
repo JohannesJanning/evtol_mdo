@@ -72,7 +72,7 @@ logging.basicConfig(
 
 
 
-def full_model_evaluation(b, c, R_prop_cruise, R_prop_hover, rho_bat, c_charge, parameters):
+def full_model_evaluation(b, c, R_prop_cruise, R_prop_hover, *rest):
     """
     Run the full system evaluation pipeline for an eVTOL design.
 
@@ -102,19 +102,44 @@ def full_model_evaluation(b, c, R_prop_cruise, R_prop_hover, rho_bat, c_charge, 
     """
     ############################################################################
     # AERODYNAMIC MODEL
-    ############################################################################
-    # Calculate Aspect Ratio 
     AR = AR_calculation(b, c)
+    if len(rest) < 1:
+        raise TypeError("full_model_evaluation missing parameters argument")
+
+    parameters = rest[-1]
+    opt_args = rest[:-1]
+
+    # Defaults from parameters
+    rho_bat = getattr(parameters, "rho_bat", None)
+    c_charge = getattr(parameters, "c_charge", None)
+    aoa_cruise = getattr(parameters, "alpha_deg_cruise", None)
+    aoa_climb = getattr(parameters, "alpha_deg_climb", None)
+
+    # Interpret optional args in preferred order: [rho_bat, c_charge, alpha_cruise, alpha_climb]
+    if len(opt_args) == 0:
+        pass
+    elif len(opt_args) == 1:
+        c_charge = opt_args[0]
+    elif len(opt_args) == 2:
+        # assume (rho_bat, c_charge)
+        rho_bat, c_charge = opt_args
+    elif len(opt_args) == 3:
+        rho_bat, c_charge, aoa_cruise = opt_args
+    elif len(opt_args) == 4:
+        rho_bat, c_charge, aoa_cruise, aoa_climb = opt_args
+    else:
+        raise TypeError("Too many optional positional arguments passed to full_model_evaluation")
+
     # Calculate coefficients in cruise
-    c_l_cruise = cl_calculation(parameters.alpha_deg_cruise, AR, parameters.c_l_0, parameters.e)
+    c_l_cruise = cl_calculation(aoa_cruise, AR, parameters.c_l_0, parameters.e)
     c_d_cruise = cd_calculation(c_l_cruise, AR, parameters.c_d_min, parameters.e)
     LD_cruise = ld_calculation(c_l_cruise, c_d_cruise)
-    # Calculate coefficients in cruise
-    c_l_climb = cl_calculation(parameters.alpha_deg_climb, AR, parameters.c_l_0, parameters.e)
+    # Calculate coefficients in climb
+    c_l_climb = cl_calculation(aoa_climb, AR, parameters.c_l_0, parameters.e)
     c_d_climb = cd_calculation(c_l_climb, AR, parameters.c_d_min, parameters.e)
     LD_climb = ld_calculation(c_l_climb, c_d_climb)
 
-    MTOM_converged = mtom_iteration_loop(parameters.MTOM_initial,b, c, R_prop_cruise, R_prop_hover, rho_bat, parameters, verbose=False)
+    MTOM_converged = mtom_iteration_loop(parameters.MTOM_initial, b, c, R_prop_cruise, R_prop_hover, rho_bat, parameters, verbose=False)
     MTOM = MTOM_converged
 
 
@@ -125,9 +150,10 @@ def full_model_evaluation(b, c, R_prop_cruise, R_prop_hover, rho_bat, c_charge, 
     #
     # Momentum Theory Model & Force Balance 
     #
-    V_cruise = cruise_speed(MTOM, parameters.g, c_l_cruise, c_d_cruise, parameters.alpha_deg_cruise, c, b, parameters.rho)
-    V_climb = climb_speed(MTOM, parameters.g, parameters.theta_deg_climb, c_l_climb, c, b, parameters.rho)
-    V_climb_hor = horizontal_climb_speed(V_climb, parameters.theta_deg_climb)
+    V_cruise = cruise_speed(MTOM, parameters.g, c_l_cruise, c_d_cruise, aoa_cruise, c, b, parameters.rho)
+    # Use climb AoA as climb angle (theta)
+    V_climb = climb_speed(MTOM, parameters.g, aoa_climb, c_l_climb, c, b, parameters.rho)
+    V_climb_hor = horizontal_climb_speed(V_climb, aoa_climb)
     D_cruise = drag_calculation(parameters.rho, V_cruise, c, b, c_d_cruise)
     D_climb = drag_calculation(parameters.rho, V_climb, c, b, c_d_climb)
     A_prop_hor = propeller_disk_area(R_prop_cruise)
@@ -151,7 +177,7 @@ def full_model_evaluation(b, c, R_prop_cruise, R_prop_hover, rho_bat, c_charge, 
     #
     # Trip Time & Distance Model / ROC 
     #
-    ROC = roc_calculation(parameters.alpha_deg_climb, V_climb)
+    ROC = roc_calculation(aoa_climb, V_climb)
     t_climb = climb_time(parameters.h_cruise, parameters.h_hover, ROC)
     t_cruise = compute_time_cruise(parameters.distance_trip, V_climb_hor, t_climb, V_cruise)
     t_trip = total_trip_time(parameters.time_hover, t_climb, t_cruise)

@@ -44,21 +44,86 @@ logging.basicConfig(
 EVAL_LOG = []
 MODEL_CALLS = 0
 
+# Design variable bounds: [b, c, R_cruise, R_hover, c_charge]
 BOUNDS = [
-    (6.0, 15.0),
-    (1.0, 2.5),
-    (0.6, 2.5),
-    (0.6, 2),
-    (200, 400),
-    (1, 4),
+    (6.0, 15.0),   # wingspan b
+    (1.0, 2.5),    # chord c
+    (0.6, 2.5),    # cruise prop radius
+    (0.5, 2.0),    # hover prop radius
+    (1.0, 4.0),    # battery charging rate c_charge
 ]
 
 N_STARTS = 10
-LOCAL_RADIUS = 0.3
+# Optimizer options
 MAXITER = 1000
 FTOL = 1e-6
 EPS = 1e-2
 SEED = 42
+
+# Initial design vector (order: [b, c, R_cruise, R_hover, c_charge]).
+# Provide a documented, reproducible initial guess.
+INITIAL = np.array([15, 1.0, 1.215, 1.586, 1.154])
+
+# Indices to vary during multistart sampling (defaults to a small subset
+# near the anchor to reduce generation of infeasible starts).
+VARY_IDX = [0, 3, 4]
+
+# Per-variable perturbation windows (physical units). If `WINDOWS` is None
+# the sampler will use a relative fraction of the initial value for each
+# variable in `VARY_IDX` (see `sample_partial_start`).
+WINDOWS = {0: 0.0, 3: 0.25, 4: 0.0}
+
+# Small epsilon used to nudge values off exact bounds (for finite-difference
+# stability). Use a conservative default much smaller than typical variable
+# magnitudes.
+BOUND_EPS = 1e-3
+
+
+def nudge_to_open_interval(x, bounds, eps=BOUND_EPS):
+    """Return `x` nudged slightly away from exact bounds.
+
+    Nudging prevents optimizer finite-difference evaluations from landing
+    exactly on bounds which can cause numerical instability.
+    """
+    x = x.copy()
+    for i, (lo, hi) in enumerate(bounds):
+        if np.isclose(x[i], lo):
+            x[i] = min(lo + eps, hi)
+        elif np.isclose(x[i], hi):
+            x[i] = max(hi - eps, lo)
+    return x
+
+
+def sample_partial_start(x_anchor, bounds, vary_idx=None, windows=None, rel_window=0.1):
+    """Create a randomized start near `x_anchor`.
+
+    Parameters
+    - x_anchor: physical-space anchor vector
+    - bounds: list of (lo, hi) tuples matching `x_anchor`
+    - vary_idx: indices to perturb (defaults to `VARY_IDX`)
+    - windows: dict mapping index -> absolute perturbation half-width (physical units)
+      If omitted, a relative window `rel_window * |x_anchor[i]|` is used for each
+      index in `vary_idx`.
+
+    Returns
+    - x0_scaled: start in scaled [0,1] space
+    - x0_phys: start in physical units
+    """
+    if vary_idx is None:
+        vary_idx = VARY_IDX
+
+    x0 = x_anchor.copy()
+    # build per-index windows if none provided
+    if windows is None:
+        windows = {i: rel_window * abs(float(x_anchor[i])) for i in vary_idx}
+
+    for i in vary_idx:
+        lo, hi = bounds[i]
+        w = windows.get(i, 0.0)
+        x0[i] = np.random.uniform(max(lo, x_anchor[i] - w), min(hi, x_anchor[i] + w))
+
+    x0 = nudge_to_open_interval(x0, bounds, eps=BOUND_EPS)
+    return scale(x0, bounds), x0
 
 
 # --------------------------------------------------------------------------- #
@@ -98,7 +163,9 @@ def scaled_objective(x_scaled):
     x = unscale(x_scaled, BOUNDS)
 
     try:
-        results, _ = full_model_evaluation(*x, p)
+        # x ordering now: b, c, R_cruise, R_hover, c_charge
+        b, c, r_cruise, r_hover, c_charge = x
+        results, _ = full_model_evaluation(b, c, r_cruise, r_hover, c_charge, p)
         annual_gwp_value = results.get("GWP MODEL", {}).get(
             "Ops GWP total per year", (None,)
         )[0]
@@ -120,6 +187,7 @@ def scaled_constraints(x_scaled):
     return constraint_functions(x)
 
 
+# Use same constraint vector size as profit optimization (12 constraints, includes ROC)
 CONSTRAINTS = [
     {"type": "ineq", "fun": lambda x, i=i: scaled_constraints(x)[i]}
     for i in range(11)
@@ -228,22 +296,15 @@ def main():
     """Main routine: run multistart optimization and export results."""
     np.random.seed(SEED)
 
-    # Initial seed from GA
-    x0_ga = [
-        14.97352057,
-        1.7603492,
-        1.59805585,
-        1.49530137,
-        399.87531272,
-        1.03502159,
-    ]
-    x0_scaled = scale(x0_ga, BOUNDS)
+    # Use partial multistart sampling around the INITIAL vector
+    x0_scaled, x0_phys = sample_partial_start(INITIAL, BOUNDS, VARY_IDX, WINDOWS)
+    starts_scaled = [x0_scaled]
+    # generate additional starts by small perturbations around initial
+    for _ in range(N_STARTS - 1):
+        pert, _ = sample_partial_start(INITIAL, BOUNDS, VARY_IDX, WINDOWS)
+        starts_scaled.append(pert)
 
-    starts_scaled = make_perturbations(x0_scaled, N_STARTS, radius=LOCAL_RADIUS)
-
-    logging.info(
-        "Starting multistart SLSQP (N=%d, radius=%.2f)...", N_STARTS, LOCAL_RADIUS
-    )
+    logging.info("Starting multistart SLSQP (N=%d) around anchor...", N_STARTS)
 
     all_runs = []
     best_feasible, best_idx = None, None
@@ -280,6 +341,17 @@ def main():
     logging.info(
         "Constraint min: %.3e (>=0 feasible)", np.min(best_feasible["cons"])
     )
+    # Define labels to match your constraint_functions list
+    cons_labels = [
+        "Wing vs Rotor Spacing", "Vertiport Span (15m)", "MTOM (5700kg)",
+        "Noise Cruise (67dB)", "Noise Climb (67dB)", "Noise Hover (77dB)",
+        "RPM Cruise (3000)", "RPM Climb (3000)", "RPM Hover (3000)",
+        "Speed Cruise (129m/s)", "Speed Climb (129m/s)"
+    ]
+
+    logging.info("--- Constraint Residuals (Positive = Feasible, ~0 = Active) ---")
+    for label, val in zip(cons_labels, best_feasible["cons"]):
+        logging.info(f"{label:25}: {val:>10.4f}")
 
     # Plot evaluations
     plt.figure()
@@ -291,10 +363,10 @@ def main():
     plt.tight_layout()
     plt.savefig("eval_log.png", dpi=300)
 
-    # Final evaluation and export
-    b, c, r_cruise, r_hover, rho_bat, c_charge = best_feasible["x_unscaled"]
+    # Final evaluation and export (use reduced design vector ordering)
+    b, c, r_cruise, r_hover, c_charge = best_feasible["x_unscaled"]
     model_results, comparison_table = full_model_evaluation(
-        b, c, r_cruise, r_hover, rho_bat, c_charge, p
+        b, c, r_cruise, r_hover, c_charge, p
     )
     write_results_to_excel(
         results_dict=model_results,

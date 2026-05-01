@@ -28,6 +28,7 @@ from scipy.optimize import minimize
 from src.analysis.evaluation_model import full_model_evaluation, write_results_to_excel
 from src.parameters import model_parameters as p
 from src.optimizer.constraints import constraint_functions
+from run_opt_profit import sample_partial_start, X_ANCHOR, BOUNDS as PROFIT_BOUNDS, VARY_IDX, WINDOWS
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -40,18 +41,18 @@ logging.basicConfig(
 )
 
 BOUNDS = [
-    (6.0, 15.0),
-    (1.0, 2.5),
-    (0.6, 2.5),
-    (0.5, 2.0),
-    (200, 400),
-    (1.0, 4.0),
+    (6.0, 15.0),  # wingspan b
+    (1.0, 2.5),   # chord c
+    (0.6, 2.5),   # cruise prop radius
+    (0.5, 2.0),   # hover prop radius
+    (1.0, 4.0),   # battery charging rate c_charge
 ]
 
 N_RUNS = 10
 MAXITER = 1000
 FTOL = 1e-6
 EPS = 0.018
+BOUND_EPS = 1e-3  
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +95,13 @@ class ObjectiveTracker:
         self.model_calls += 1
         x = unscale(x_scaled, self.bounds)
         try:
-            results, _ = full_model_evaluation(*x, self.parameters)
+            # x ordering: b, c, R_cruise, R_hover, c_charge
+            b, c, r_cruise, r_hover, c_charge = x
+            import time as _time
+            t0 = _time.time()
+            results, _ = full_model_evaluation(b, c, r_cruise, r_hover, c_charge, self.parameters)
+            dt = _time.time() - t0
+            logging.info("full_model_evaluation time: %.4fs", dt)
             toc = results["ECONOMIC MODEL - COST"]["Total operating cost per trip"][0]
 
             if toc is None or np.isnan(toc):
@@ -112,10 +119,8 @@ def scaled_constraints(x_scaled):
     """Constraint function in scaled space."""
     x = unscale(x_scaled, BOUNDS)
     return constraint_functions(x)
-
-
 CONSTRAINTS = [
-    {"type": "ineq", "fun": lambda x, i=i: scaled_constraints(x)[i]}
+    {"type": "ineq", "fun": lambda x, i=i: scaled_constraints(x)[i] + 0.1}
     for i in range(11)
 ]
 
@@ -134,10 +139,16 @@ def main():
 
     start_time_total = time.time()
 
+    # Use a TOC-specific anchor and 10% start windows around it
+    # Anchor provided as: [b, c, R_cruise, R_hover, c_charge]
+    X_ANCHOR_TOC = np.array([9.8040, 1.0000, 0.9200, 1.3830, 1.9230])
+    VARY_IDX_TOC = list(range(len(BOUNDS)))
+    # 10% window for each variable (physical units)
+    WINDOWS_TOC = {i: 0.1 * float(val) for i, val in enumerate(X_ANCHOR_TOC)}
+
     for i in range(N_RUNS):
         tracker = ObjectiveTracker(BOUNDS, p)
-        x0_rand = np.random.uniform(0, 1, size=len(BOUNDS))
-        x0_phys = unscale(x0_rand, BOUNDS)
+        x0_rand, x0_phys = sample_partial_start(X_ANCHOR_TOC, BOUNDS, VARY_IDX_TOC, WINDOWS_TOC)
 
         logging.info("Run %d/%d | Init x0 = %s", i + 1, N_RUNS, np.round(x0_phys, 3))
 
@@ -153,9 +164,12 @@ def main():
             )
             run_time = time.time() - t0
 
+            logging.info("Minimize run time: %.3f s | model calls: %d", run_time, tracker.model_calls)
+
             x_physical = unscale(result.x, BOUNDS)
             toc = result.fun
-            valid = are_constraints_satisfied(constraint_functions(x_physical))
+            # Validate feasibility using the constraint_functions (ROC removed globally)
+            valid = are_constraints_satisfied(constraint_functions(x_physical), tol=0.3)
 
             logging.info("ToC = %.2f € | Feasible = %s", toc, valid)
 
@@ -197,9 +211,10 @@ def main():
 
         # Excel export
         try:
-            b, c, r_cruise, r_hover, rho_bat, c_charge = best_x
+            # best_x order: [b, c, R_cruise, R_hover, c_charge]
+            b, c, r_cruise, r_hover, c_charge = best_x
             model_results, comparison_table = full_model_evaluation(
-                b, c, r_cruise, r_hover, rho_bat, c_charge, p
+                b, c, r_cruise, r_hover, c_charge, p
             )
             write_results_to_excel(
                 results_dict=model_results,

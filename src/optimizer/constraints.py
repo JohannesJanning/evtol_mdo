@@ -10,10 +10,14 @@ def constraint_functions(x):
 
     Parameters
     ----------
-    x : array-like
-        Design variables in the order:
-        [wingspan b, chord c, cruise rotor radius, hover rotor radius,
-         battery energy density rho_bat, charging C-rate].
+        x : array-like
+                Design variables in either of the orders:
+                - 6-element: [wingspan b, chord c, cruise rotor radius,
+                    hover rotor radius, battery energy density rho_bat, charging C-rate]
+                - 5-element: [wingspan b, chord c, cruise rotor radius,
+                    hover rotor radius, charging C-rate]
+                If a 5-element vector is provided, `rho_bat` is taken from
+                `parameters.rho_bat`.
 
     Returns
     -------
@@ -31,14 +35,33 @@ def constraint_functions(x):
     -----
     - If evaluation fails, returns a vector of large negative penalties.
     """
-    b, c, r_cruise, r_hover, rho_bat, c_charge = x
+    # Support various-length design vectors for backward compatibility
+    # Preferred ordering when provided: [b, c, r_cruise, r_hover, rho_bat, c_charge, alpha_cruise, alpha_climb]
+    if len(x) == 8:
+        b, c, r_cruise, r_hover, rho_bat, c_charge, alpha_cruise, alpha_climb = x
+    elif len(x) == 7:
+        # assume rho_bat provided, alpha_climb missing
+        b, c, r_cruise, r_hover, rho_bat, c_charge, alpha_cruise = x
+        alpha_climb = parameters.alpha_deg_climb
+    elif len(x) == 6:
+        # assume rho_bat and alphas missing
+        b, c, r_cruise, r_hover, rho_bat, c_charge = x
+        alpha_cruise = parameters.alpha_deg_cruise
+        alpha_climb = parameters.alpha_deg_climb
+    elif len(x) == 5:
+        b, c, r_cruise, r_hover, c_charge = x
+        rho_bat = parameters.rho_bat
+        alpha_cruise = parameters.alpha_deg_cruise
+        alpha_climb = parameters.alpha_deg_climb
+    else:
+        raise ValueError(f"Design vector must have length 5..8, got {len(x)}")
 
     try:
         results, _ = full_model_evaluation(
-            b, c, r_cruise, r_hover, rho_bat, c_charge, parameters
+            b, c, r_cruise, r_hover, rho_bat, c_charge, alpha_cruise, alpha_climb, parameters
         )
     except Exception:
-        # Hard penalty in case of model failure
+        # Hard penalty in case of model failure (return same length as normal)
         return [-1e3] * 11
 
     constraints = []

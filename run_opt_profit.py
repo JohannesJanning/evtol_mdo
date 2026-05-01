@@ -41,27 +41,30 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+# Design variables 
 BOUNDS = [
     (6.0, 15.0),   # 0: wingspan b
-    (1.0, 2.5),    # 1
-    (0.6, 2.5),    # 2
+    (1.0, 2.5),    # 1: wing chord c
+    (0.6, 2.5),    # 2: cruise prop radius
     (0.5, 2.0),    # 3: hover prop radius
-    (200, 400),    # 4: battery density
-    (1.0, 4.0),    # 5
+    (1.0, 4.0),    # 4: battery charging rate c_charge
 ]
 
 N_RUNS = 10
 MAXITER = 1000
 FTOL = 1e-6
 EPS = 0.018
-BOUND_EPS = 1e-3  # nudge off exact bounds to help gradient methods
+BOUND_EPS = 1e-3  
 
-# Anchor point (near-optimum)
-X_ANCHOR = np.array([11.51092996, 1.0, 2.5, 1.72424795, 263.54160762, 4.0])
+# Order: [b, c, R_cruise, R_hover, c_charge]
+X_ANCHOR = np.array([10.9, 1.0, 2.5, 1.643, 4.0])
 
-# Indices to vary
+# Fixed initial vector to use for every multistart run (no perturbation)
+# Order: [b, c, R_cruise, R_hover, rho_bat, c_charge, alpha_cruise, alpha_climb]
+# Indices to vary (used for multistart sampling)
 VARY_IDX = [0, 3, 4]
-WINDOWS = {0: 0.8, 3: 0.25, 4: 30.0}  # search ranges in physical units
+# search ranges in physical units for the variables in VARY_IDX
+WINDOWS = {0: 0.0, 3: 0.25, 4: 0.0}
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +139,7 @@ class ObjectiveTracker:
         self.model_calls += 1
         x = unscale(x_scaled, self.bounds)
         try:
+            # x ordering: b, c, R_cruise, R_hover, rho_bat, c_charge, alpha_cruise, alpha_climb
             results, _ = full_model_evaluation(*x, self.parameters)
             profit = results.get(
                 "ECONOMIC MODEL - PROFIT", {}
@@ -159,7 +163,7 @@ def scaled_constraints(x_scaled):
 
 
 CONSTRAINTS = [
-    {"type": "ineq", "fun": lambda x, i=i: scaled_constraints(x)[i] + 0.3}
+    {"type": "ineq", "fun": lambda x, i=i: scaled_constraints(x)[i] + 0.1}
     for i in range(11)
 ]
 
@@ -241,11 +245,13 @@ def main():
             )
             logging.info("Runtime (best run): %.2f s", best_runtime)
 
+
         # Excel export
         try:
-            b, c, r_cruise, r_hover, rho_bat, c_charge = best_x
+            # best_x order: [b, c, R_cruise, R_hover, c_charge]
+            b, c, r_cruise, r_hover, c_charge = best_x
             model_results, comparison_table = full_model_evaluation(
-                b, c, r_cruise, r_hover, rho_bat, c_charge, p
+                b, c, r_cruise, r_hover, c_charge, p
             )
             write_results_to_excel(
                 results_dict=model_results,

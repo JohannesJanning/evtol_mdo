@@ -14,6 +14,6 @@ def cl_calculation(alpha_deg, AR, c_l_0, e):
         float: Total lift coefficient (dimensionless).
     """
     alpha_rad = math.radians(alpha_deg)
-    a_airfoil = 5.747
+    a_airfoil = 5.747 # Lift-curve slope of the airfoil (per radian), from regression for NACA 2412, marked for review 
     a_wing = a_airfoil / (1 + (a_airfoil / (math.pi * AR * e)))
     return a_wing * alpha_rad + c_l_0

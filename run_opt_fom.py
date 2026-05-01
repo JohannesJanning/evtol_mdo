@@ -40,18 +40,24 @@ logging.basicConfig(
 
 MODEL_CALLS = 0
 BOUNDS = [
-    (6.0, 15.0),
-    (1.0, 2.5),
-    (0.6, 2.5),
-    (0.5, 2.5),
-    (200, 400),
-    (1, 4),
+    (6.0, 15.0),  # wingspan b
+    (1.0, 2.5),   # chord c
+    (0.6, 2.5),   # cruise prop radius
+    (0.5, 2.0),   # hover prop radius
+    (1.0, 4.0),   # battery charging rate c_charge
 ]
 
 N_RUNS = 10
 MAXITER = 1000
-FTOL = 1e-6
-EPS = 0.018
+FTOL = 1e-8
+EPS = 1e-2
+# Initial anchor (physical units). Battery energy density is fixed in parameters.
+# Order: [b, c, R_cruise, R_hover, c_charge]
+X_INITIAL = np.array([14.648, 1.0, 1.215, 1.586, 1.154])
+BOUND_EPS = 1e-2
+# Indices to perturb around the anchor and optional absolute windows
+VARY_IDX = [0, 2, 3, 4]
+WINDOWS = {0: 0.5, 2: 0.2, 3: 0.2, 4: 0.2}
 
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +72,30 @@ def scale(x, bounds):
 def unscale(x_scaled, bounds):
     """Unscale [0, 1] parameters back to physical values using bounds."""
     return np.array([low + xi * (high - low) for xi, (low, high) in zip(x_scaled, bounds)])
+
+
+def nudge_to_open_interval(x, bounds, eps=BOUND_EPS):
+    x = x.copy()
+    for i, (lo, hi) in enumerate(bounds):
+        if np.isclose(x[i], lo):
+            x[i] = min(lo + eps, hi)
+        elif np.isclose(x[i], hi):
+            x[i] = max(hi - eps, lo)
+    return x
+
+
+def sample_partial_start(x_anchor, bounds, vary_idx=None, windows=None, rel_window=0.1):
+    if vary_idx is None:
+        vary_idx = list(range(len(bounds)))
+    x0 = x_anchor.copy()
+    if windows is None:
+        windows = {i: rel_window * abs(float(x_anchor[i])) for i in vary_idx}
+    for i in vary_idx:
+        lo, hi = bounds[i]
+        w = windows.get(i, 0.0)
+        x0[i] = np.random.uniform(max(lo, x_anchor[i] - w), min(hi, x_anchor[i] + w))
+    x0 = nudge_to_open_interval(x0, bounds, eps=BOUND_EPS)
+    return scale(x0, bounds), x0
 
 
 # --------------------------------------------------------------------------- #
@@ -86,9 +116,11 @@ def scaled_objective(x_scaled):
     x = unscale(x_scaled, BOUNDS)
 
     try:
-        results, comparison_table = full_model_evaluation(*x, p)
+        # x ordering: b, c, R_cruise, R_hover, c_charge
+        b, c, r_cruise, r_hover, c_charge = x
+        results, comparison_table = full_model_evaluation(b, c, r_cruise, r_hover, c_charge, p)
         fom = next(
-            (entry["FoM"] for entry in comparison_table if "eVTOL" in entry["Mode (LF)"]),
+            (entry["FoM"] for entry in comparison_table if "eVTOL" in entry["Mode (LF)" ]),
             None,
         )
         if fom is None or np.isnan(fom):
@@ -131,8 +163,8 @@ def main():
 
     for run_idx in range(N_RUNS):
         eval_log = []  # local convergence log per run
-        x0_rand = np.random.uniform(0, 1, size=len(BOUNDS))
-        x0_phys = unscale(x0_rand, BOUNDS)
+        # sample a randomized start near the anchor
+        x0_rand, x0_phys = sample_partial_start(X_INITIAL, BOUNDS, VARY_IDX, WINDOWS)
 
         logging.info("Run %d/%d | Init x0 = %s", run_idx + 1, N_RUNS, np.round(x0_phys, 3))
 
@@ -230,9 +262,10 @@ def main():
     # ------------------------------------------------------------------ #
     if best_x is not None:
         try:
-            b, c, r_cruise, r_hover, rho_bat, c_charge = best_x
+            # best_x ordering now: b, c, R_cruise, R_hover, c_charge
+            b, c, r_cruise, r_hover, c_charge = best_x
             model_results, comparison_table = full_model_evaluation(
-                b, c, r_cruise, r_hover, rho_bat, c_charge, p
+                b, c, r_cruise, r_hover, c_charge, p
             )
             write_results_to_excel(
                 results_dict=model_results,
