@@ -1,6 +1,6 @@
 # eVTOL_MDO
 
-This repository provides the codebase and models accompanying the paper on **co-design and optimization of eVTOL aircraft**.  
+This repository provides the codebase and models accompanying the paper on **design and optimization of eVTOL aircraft**.  
 It offers a modular framework to evaluate and benchmark electric vertical take-off and landing (eVTOL) concepts across
 multiple disciplines, including:
 

@@ -74,8 +74,7 @@ VARY_IDX = [0, 3, 4]
 WINDOWS = {0: 0.0, 3: 0.25, 4: 0.0}
 
 # Small epsilon used to nudge values off exact bounds (for finite-difference
-# stability). Use a conservative default much smaller than typical variable
-# magnitudes.
+# stability). 
 BOUND_EPS = 1e-3
 
 
